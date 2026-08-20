@@ -1,20 +1,23 @@
 name: Bing Bot
-on:
+
+"on":
   schedule:
-    - cron: '0 10 * * *'
+    - cron: "0 10 * * *"
   workflow_dispatch:
+
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
       - name: Install
         run: |
           npm install
-          npx playwright install chromium
+          npx playwright install --with-deps chromium
       - name: Run
         env:
           MS_EMAIL: ${{ secrets.MS_EMAIL }}
