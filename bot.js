@@ -1,5 +1,7 @@
 const { chromium } = require('playwright');
 
+const EMAIL = process.env.MS_EMAIL || '';
+const PASSWORD = process.env.MS_PASSWORD || '';
 const COOKIES_RAW = process.env.MS_COOKIES || '';
 
 const SEARCHES = [
@@ -16,10 +18,7 @@ function sleep(ms) {
 
 function parseCookies(raw) {
   const trimmed = (raw || '').trim();
-  if (!trimmed) {
-    throw new Error('MS_COOKIES secret is empty. Add it in repo Settings → Secrets → Actions.');
-  }
-
+  if (!trimmed) return [];
   const toCookie = (c) => ({
     name: c.name,
     value: String(c.value ?? ''),
@@ -28,24 +27,14 @@ function parseCookies(raw) {
     httpOnly: Boolean(c.httpOnly),
     secure: c.secure !== false,
   });
-
   if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     const parsed = JSON.parse(trimmed);
     const arr = Array.isArray(parsed) ? parsed : parsed.cookies;
-    if (!Array.isArray(arr) || !arr.length) {
-      throw new Error('MS_COOKIES JSON did not contain any cookies.');
-    }
-    return arr.filter((c) => c && c.name && c.value != null).map(toCookie);
+    return (arr || []).filter((c) => c && c.name && c.value != null).map(toCookie);
   }
-
-  if (!trimmed.includes(';') && !trimmed.includes('=')) {
+  if (!trimmed.includes(';') && !/_U=/i.test(trimmed)) {
     return [{ name: '_U', value: trimmed, domain: '.bing.com', path: '/', secure: true }];
   }
-
-  if (!trimmed.includes(';') && !/_U=/i.test(trimmed) && !trimmed.includes(' ')) {
-    return [{ name: '_U', value: trimmed, domain: '.bing.com', path: '/', secure: true }];
-  }
-
   return trimmed
     .split(';')
     .map((part) => part.trim())
@@ -64,24 +53,78 @@ function parseCookies(raw) {
     .filter(Boolean);
 }
 
+async function clickNext(page) {
+  const btn = page.locator('#idSIButtonNext, input[type="submit"], button[type="submit"]').first();
+  await btn.click({ timeout: 20000 });
+}
+
+async function loginWithPassword(page) {
+  if (!EMAIL || !PASSWORD) {
+    throw new Error('MS_EMAIL / MS_PASSWORD secrets are missing.');
+  }
+
+  console.log('Logging in as ' + EMAIL + ' ...');
+  await page.goto('https://login.live.com/', { waitUntil: 'domcontentloaded' });
+  await sleep(2000);
+
+  const emailBox = page.locator('input[name="loginfmt"], input[type="email"]').first();
+  await emailBox.waitFor({ timeout: 20000 });
+  await emailBox.fill(EMAIL);
+  await clickNext(page);
+  await sleep(2500);
+
+  const passBox = page.locator('input[name="passwd"], input[type="password"]').first();
+  await passBox.waitFor({ timeout: 25000 });
+  await passBox.fill(PASSWORD);
+  await clickNext(page);
+  await sleep(3000);
+
+  try {
+    await page.locator('#idSIButtonNext').click({ timeout: 5000 });
+  } catch (e) {}
+
+  console.log('>>> APPROVE THE SIGN-IN ON YOUR IPAD NOW (Microsoft Authenticator). Waiting 3 minutes...');
+
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    const url = page.url();
+    const text = ((await page.locator('body').innerText().catch(() => '')) || '').slice(0, 800);
+    console.log('Login page: ' + url);
+    if (text) console.log(text.replace(/\s+/g, ' ').slice(0, 400));
+
+    try {
+      await page.locator('#idSIButtonNext, #acceptButton, input[value="Yes"]').first().click({ timeout: 800 });
+    } catch (e) {}
+
+    if (!/login\.live\.com|login\.microsoftonline\.com|account\.live\.com/i.test(url)) {
+      console.log('Left the login page — assuming 2FA was approved.');
+      break;
+    }
+    await sleep(8000);
+  }
+
+  await page.goto('https://rewards.bing.com/', { waitUntil: 'domcontentloaded' });
+  await sleep(4000);
+  const url = page.url();
+  if (/login|signin/i.test(url)) {
+    throw new Error('Still on login after 2FA wait. Approve Authenticator faster next time, or 2FA number-match is required.');
+  }
+  console.log('Logged in.');
+}
+
 async function assertLoggedIn(page) {
   await page.goto('https://rewards.bing.com/', { waitUntil: 'domcontentloaded' });
   await sleep(4000);
   const url = page.url();
-  if (/login|signin|oauth|live\.com/i.test(url)) {
-    throw new Error('Cookie is invalid or expired — Microsoft sent us to login. Refresh MS_COOKIES.');
+  if (/login|signin|oauth/i.test(url)) {
+    throw new Error('Not signed in.');
   }
-  const body = ((await page.textContent('body').catch(() => '')) || '').toLowerCase();
-  if (body.includes('sign in') && !body.includes('points')) {
-    throw new Error('Not signed in. Refresh MS_COOKIES from a logged-in bing.com tab.');
-  }
-  console.log('Logged in via cookies.');
+  console.log('Rewards page OK.');
 }
 
 async function doSearches(page, label, count, offset) {
   for (let i = 0; i < count; i++) {
-    let term = SEARCHES[(i + offset) % SEARCHES.length];
-    term += ' ' + (Date.now() % 10000);
+    let term = SEARCHES[(i + offset) % SEARCHES.length] + ' ' + (Date.now() % 10000);
     await page.goto('https://www.bing.com/search?q=' + encodeURIComponent(term), {
       waitUntil: 'domcontentloaded',
     });
@@ -91,21 +134,32 @@ async function doSearches(page, label, count, offset) {
 }
 
 async function run() {
-  const cookies = parseCookies(COOKIES_RAW);
-  console.log('Loaded ' + cookies.length + ' cookie(s).');
-
   const browser = await chromium.launch({ headless: true });
+  const desktop = await browser.newContext({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
+  });
 
   try {
-    const desktop = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
-    });
-    await desktop.addCookies(cookies);
+    const cookies = COOKIES_RAW.trim() ? parseCookies(COOKIES_RAW) : [];
+    if (cookies.length) {
+      console.log('Using ' + cookies.length + ' cookie(s).');
+      await desktop.addCookies(cookies);
+    }
+
     const page = await desktop.newPage();
 
-    await assertLoggedIn(page);
+    if (cookies.length) {
+      try {
+        await assertLoggedIn(page);
+      } catch (e) {
+        console.log('Cookies did not work, falling back to password + 2FA.');
+        await loginWithPassword(page);
+      }
+    } else {
+      await loginWithPassword(page);
+    }
 
     console.log('Starting desktop searches...');
     await doSearches(page, 'Desktop', 30, 0);
@@ -118,8 +172,10 @@ async function run() {
       isMobile: true,
       hasTouch: true,
     });
-    await mobile.addCookies(cookies);
+    if (cookies.length) await mobile.addCookies(cookies);
     const mobilePage = await mobile.newPage();
+    const desktopCookies = await desktop.cookies();
+    await mobile.addCookies(desktopCookies);
     await doSearches(mobilePage, 'Mobile', 20, 10);
     await mobile.close();
 
@@ -139,6 +195,7 @@ async function run() {
 
     console.log('All done!');
     await desktop.close();
+    await browser.close();
   } catch (err) {
     console.error('Error: ' + err.message);
     try {
@@ -148,8 +205,6 @@ async function run() {
     await browser.close();
     process.exit(1);
   }
-
-  await browser.close();
 }
 
 run();
