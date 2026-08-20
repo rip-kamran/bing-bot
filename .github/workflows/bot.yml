@@ -13,13 +13,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install
         run: |
           npm install
           npx playwright install --with-deps chromium
       - name: Run
         env:
-          MS_EMAIL: ${{ secrets.MS_EMAIL }}
-          MS_PASSWORD: ${{ secrets.MS_PASSWORD }}
+          MS_COOKIES: ${{ secrets.MS_COOKIES }}
         run: npm start
+      - name: Upload debug screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug
+          path: debug.png
+          if-no-files-found: ignore
