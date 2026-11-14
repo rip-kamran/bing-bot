@@ -87,25 +87,29 @@ async function isSignedIn(page) {
 async function login(page) {
   if (!EMAIL || !PASSWORD) throw new Error('MS_EMAIL / MS_PASSWORD secrets missing.');
 
-  console.log('Navigating to Bing...');
-  await page.goto('https://www.bing.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await sleep(2000);
-
-  const clickedSignIn = await tryClick(
-    page,
-    '#id_s, a#id_l, a[href*="login.live.com"], a[href*="signin"], text=Sign in',
-    5000
+  // Go straight to the Microsoft login page — avoids Bing's MSPPError region wall
+  console.log('Navigating to Microsoft login...');
+  await page.goto(
+    'https://login.live.com/login.srf?wa=wsignin1.0&rpsnv=162&wp=MBI_SSL&wreply=' +
+      encodeURIComponent('https://www.bing.com/') + '&id=264960',
+    { waitUntil: 'domcontentloaded', timeout: 60000 }
   );
-  if (!clickedSignIn) {
-    await page.goto(
-      'https://login.live.com/login.srf?wa=wsignin1.0&rpsnv=162&wp=MBI_SSL&wreply=' +
-        encodeURIComponent('https://www.bing.com/') + '&id=264960',
-      { waitUntil: 'domcontentloaded', timeout: 60000 }
-    );
-  }
   await sleep(3000);
 
-  await fillFirst(page, 'input[name="loginfmt"], input[type="email"], input[name="username"]', EMAIL, 25000);
+  const emailSel = 'input[name="loginfmt"], input[type="email"], input[name="username"]';
+  // retry once if email field not visible (sometimes needs a second load)
+  let emailVisible = await page.locator(emailSel).first().isVisible().catch(() => false);
+  if (!emailVisible) {
+    console.log('Email field not found on first load — retrying login URL...');
+    await page.goto(
+      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=9ea1ad79-fdb6-4f9a-8bc3-2b70f96e34c7&response_type=code&redirect_uri=' +
+        encodeURIComponent('https://www.bing.com/') + '&scope=openid+profile',
+      { waitUntil: 'domcontentloaded', timeout: 60000 }
+    );
+    await sleep(3000);
+  }
+
+  await fillFirst(page, emailSel, EMAIL, 25000);
   await tryClick(page, '#idSIButtonNext, input[type="submit"], button[type="submit"]', 8000);
   await sleep(4000);
 
