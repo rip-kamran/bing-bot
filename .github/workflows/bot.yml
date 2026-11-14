@@ -1,30 +1,47 @@
 name: Bing Bot
 
-"on":
+on:
   schedule:
-    - cron: "0 10 * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install
+
+      - name: Restore cookie cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ms_cookies.json
+          key: ms-cookies-${{ github.run_id }}
+          restore-keys: ms-cookies-
+
+      - name: Install deps
         run: |
           npm install
-          npx playwright install --with-deps chrome
-          sudo apt-get update
-          sudo apt-get install -y xvfb
-      - name: Run
+          npx playwright install --with-deps chromium
+
+      - name: Run bot
         env:
-          MS_EMAIL: ${{ secrets.MS_EMAIL }}
+          MS_EMAIL:    ${{ secrets.MS_EMAIL }}
           MS_PASSWORD: ${{ secrets.MS_PASSWORD }}
-        run: xvfb-run -a npm start
+        run: node bot.js
+
+      - name: Save cookie cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ms_cookies.json
+          key: ms-cookies-${{ github.run_id }}
+
       - name: Upload debug screenshot
         if: failure()
         uses: actions/upload-artifact@v4
